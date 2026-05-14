@@ -1,0 +1,49 @@
+---
+// 接收外部传入的参数
+interface Props {
+  url: string;        // 联盟链接
+  text: string;       // 按钮文字
+  tracking?: string;  // 追踪ID（区分哪篇文章带来的点击）
+  color?: string;     // 按钮颜色（可选）
+}
+
+// 默认值
+const {
+  url,
+  text,
+  tracking = "affiliate",
+  color = "#2563eb"
+} = Astro.props;
+
+// 自动拼接追踪参数（方便你在联盟后台看数据）
+const affiliateUrl = `${url}${url.includes('?') ? '&' : '?'}subid=${tracking}`;
+---
+
+<a
+  href={affiliateUrl}
+  target="_blank"
+  rel="noopener sponsored nofollow"
+  class="affiliate-btn"
+  style="--btn-color: {color}"
+>
+  {text}
+</a>
+
+<style>
+.affiliate-btn {
+  display: inline-block;
+  background: var(--btn-color);
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  text-decoration: none;
+  text-align: center;
+  margin: 1rem 0;
+  transition: transform 0.2s;
+}
+.affiliate-btn:hover {
+  transform: translateY(-2px);
+  opacity: 0.9;
+}
+</style>
