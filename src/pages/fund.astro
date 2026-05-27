@@ -70,6 +70,7 @@ import Header from '../components/Header.astro';
 						<h2 id="chart-title">历史走势</h2>
 					</div>
 					<div class="range-tabs" role="group" aria-label="走势范围">
+						<button type="button" data-range="15">15日</button>
 						<button type="button" class="active" data-range="30">1月</button>
 						<button type="button" data-range="90">3月</button>
 						<button type="button" data-range="365">1年</button>
@@ -137,7 +138,7 @@ import Header from '../components/Header.astro';
 			const canvas = document.querySelector('#fund-chart');
 			const ctx = canvas.getContext('2d');
 			const rangeButtons = [...document.querySelectorAll('[data-range]')];
-			let state = { funds: [], selectedCode: '', range: '30' };
+			let state = { funds: [], selectedCode: '', range: '30', hoverIndex: null, chartMeta: null };
 
 			const els = {
 				count: document.querySelector('#fund-count'),
@@ -360,7 +361,7 @@ import Header from '../components/Header.astro';
 					return;
 				}
 
-				els.fundList.innerHTML = state.funds.map((fund) => {
+				const rows = state.funds.map((fund) => {
 					if (fund.error || !fund.detail) {
 						return `
 							<div class="fund-row error-row" data-code="${fund.code}">
@@ -396,6 +397,19 @@ import Header from '../components/Header.astro';
 						</div>
 					`;
 				}).join('');
+
+				els.fundList.innerHTML = `
+					<div class="fund-table">
+						<div class="fund-table-head" aria-hidden="true">
+							<span>基金</span>
+							<span>持仓金额</span>
+							<span>估值 / 净值</span>
+							<span>今日估算</span>
+							<span>观察</span>
+						</div>
+						${rows}
+					</div>
+				`;
 
 				els.fundList.querySelectorAll('.fund-row').forEach((row) => {
 					row.addEventListener('click', (event) => {
@@ -438,7 +452,7 @@ import Header from '../components/Header.astro';
 
 				const width = rect.width;
 				const height = rect.height;
-				const padding = { top: 24, right: 24, bottom: 34, left: 52 };
+				const padding = { top: 24, right: 24, bottom: 34, left: 64 };
 				ctx.fillStyle = '#ffffff';
 				ctx.fillRect(0, 0, width, height);
 				els.chartTitle.textContent = fund?.detail ? `${fund.detail.name} 历史走势` : '历史走势';
@@ -450,14 +464,17 @@ import Header from '../components/Header.astro';
 					return;
 				}
 
-				const values = trend.map((item) => item.nav);
-				const min = Math.min(...values);
-				const max = Math.max(...values);
+				const baseNav = trend[0].nav || 1;
+				const values = trend.map((item) => ((item.nav - baseNav) / baseNav) * 100);
+				const min = Math.min(...values, 0);
+				const max = Math.max(...values, 0);
 				const span = max - min || 1;
 				const plotW = width - padding.left - padding.right;
 				const plotH = height - padding.top - padding.bottom;
 				const x = (index) => padding.left + (index / (trend.length - 1)) * plotW;
 				const y = (value) => padding.top + (1 - (value - min) / span) * plotH;
+				const valueAt = (index) => values[index];
+				state.chartMeta = { trend, values, padding, plotW, plotH, width, height };
 
 				ctx.strokeStyle = '#e2e8f0';
 				ctx.lineWidth = 1;
@@ -470,7 +487,7 @@ import Header from '../components/Header.astro';
 					ctx.moveTo(padding.left, gridY);
 					ctx.lineTo(width - padding.right, gridY);
 					ctx.stroke();
-					ctx.fillText(label.toFixed(4), 8, gridY + 4);
+					ctx.fillText(`${label >= 0 ? '+' : ''}${label.toFixed(2)}%`, 8, gridY + 4);
 				}
 
 				const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
@@ -478,8 +495,8 @@ import Header from '../components/Header.astro';
 				gradient.addColorStop(1, 'rgba(14, 165, 233, 0)');
 				ctx.beginPath();
 				trend.forEach((item, index) => {
-					if (index === 0) ctx.moveTo(x(index), y(item.nav));
-					else ctx.lineTo(x(index), y(item.nav));
+					if (index === 0) ctx.moveTo(x(index), y(valueAt(index)));
+					else ctx.lineTo(x(index), y(valueAt(index)));
 				});
 				ctx.lineTo(width - padding.right, height - padding.bottom);
 				ctx.lineTo(padding.left, height - padding.bottom);
@@ -489,12 +506,52 @@ import Header from '../components/Header.astro';
 
 				ctx.beginPath();
 				trend.forEach((item, index) => {
-					if (index === 0) ctx.moveTo(x(index), y(item.nav));
-					else ctx.lineTo(x(index), y(item.nav));
+					if (index === 0) ctx.moveTo(x(index), y(valueAt(index)));
+					else ctx.lineTo(x(index), y(valueAt(index)));
 				});
 				ctx.strokeStyle = '#0284c7';
 				ctx.lineWidth = 2.5;
 				ctx.stroke();
+
+				if (state.hoverIndex !== null && trend[state.hoverIndex]) {
+					const hoverX = x(state.hoverIndex);
+					const hoverY = y(valueAt(state.hoverIndex));
+					const hoverValue = valueAt(state.hoverIndex);
+					const hoverLabel = `${hoverValue >= 0 ? '+' : ''}${hoverValue.toFixed(2)}%`;
+					const hoverDate = trend[state.hoverIndex].date;
+					const tooltipText = `${hoverDate}  ${hoverLabel}`;
+					ctx.save();
+					ctx.strokeStyle = '#94a3b8';
+					ctx.lineWidth = 1;
+					ctx.setLineDash([4, 4]);
+					ctx.beginPath();
+					ctx.moveTo(hoverX, padding.top);
+					ctx.lineTo(hoverX, height - padding.bottom);
+					ctx.stroke();
+					ctx.setLineDash([]);
+
+					ctx.fillStyle = '#0284c7';
+					ctx.beginPath();
+					ctx.arc(hoverX, hoverY, 4, 0, Math.PI * 2);
+					ctx.fill();
+					ctx.strokeStyle = '#ffffff';
+					ctx.lineWidth = 2;
+					ctx.stroke();
+
+					ctx.font = '12px sans-serif';
+					const textWidth = ctx.measureText(tooltipText).width;
+					const boxW = textWidth + 18;
+					const boxH = 30;
+					const boxX = Math.min(Math.max(hoverX + 10, padding.left), width - padding.right - boxW);
+					const boxY = Math.max(padding.top + 4, hoverY - 42);
+					ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+					ctx.beginPath();
+					ctx.roundRect(boxX, boxY, boxW, boxH, 6);
+					ctx.fill();
+					ctx.fillStyle = '#ffffff';
+					ctx.fillText(tooltipText, boxX + 9, boxY + 19);
+					ctx.restore();
+				}
 
 				ctx.fillStyle = '#334155';
 				ctx.fillText(trend[0].date.slice(5), padding.left, height - 10);
@@ -591,8 +648,34 @@ import Header from '../components/Header.astro';
 					rangeButtons.forEach((item) => item.classList.remove('active'));
 					button.classList.add('active');
 					state.range = button.dataset.range;
+					state.hoverIndex = null;
 					drawChart();
 				});
+			});
+			canvas.addEventListener('mousemove', (event) => {
+				const meta = state.chartMeta;
+				if (!meta?.trend?.length) return;
+				const rect = canvas.getBoundingClientRect();
+				const mouseX = event.clientX - rect.left;
+				const minX = meta.padding.left;
+				const maxX = meta.width - meta.padding.right;
+				if (mouseX < minX || mouseX > maxX) {
+					if (state.hoverIndex !== null) {
+						state.hoverIndex = null;
+						drawChart();
+					}
+					return;
+				}
+				const ratio = (mouseX - meta.padding.left) / meta.plotW;
+				const nextIndex = Math.round(ratio * (meta.trend.length - 1));
+				if (nextIndex !== state.hoverIndex) {
+					state.hoverIndex = Math.max(0, Math.min(meta.trend.length - 1, nextIndex));
+					drawChart();
+				}
+			});
+			canvas.addEventListener('mouseleave', () => {
+				state.hoverIndex = null;
+				drawChart();
 			});
 			window.addEventListener('resize', drawChart);
 
@@ -645,6 +728,14 @@ import Header from '../components/Header.astro';
 		margin: 0;
 	}
 
+	.fund-title h1 {
+		font-size: 1.55rem;
+	}
+
+	.panel-head h2 {
+		font-size: 1.22rem;
+	}
+
 	.fund-form {
 		display: grid;
 		grid-template-columns: minmax(260px, 1.8fr) minmax(160px, 0.8fr) auto;
@@ -662,7 +753,7 @@ import Header from '../components/Header.astro';
 
 	.fund-form input,
 	.fund-form textarea,
-	.amount-cell input {
+	:global(.amount-cell input) {
 		width: 100%;
 		box-sizing: border-box;
 		border: 1px solid #cbd5e1;
@@ -728,8 +819,8 @@ import Header from '../components/Header.astro';
 
 	.metric-card span,
 	.calc-list dt,
-	.fund-row small,
-	.amount-cell small {
+	:global(.fund-row small),
+	:global(.amount-cell small) {
 		display: block;
 		color: #64748b;
 		font-size: 0.75rem;
@@ -782,54 +873,87 @@ import Header from '../components/Header.astro';
 
 	.fund-list {
 		display: grid;
-		gap: 0.55em;
-	}
-
-	.fund-row {
-		display: grid;
-		grid-template-columns: minmax(180px, 1.45fr) minmax(120px, 0.9fr) repeat(3, minmax(90px, 1fr));
-		gap: 0.75em;
-		align-items: center;
-		width: 100%;
-		padding: 0.8em;
+		gap: 0;
+		overflow: hidden;
 		border: 1px solid #e2e8f0;
 		border-radius: 8px;
+		background: #fff;
+	}
+
+	:global(.fund-table) {
+		min-width: 820px;
+	}
+
+	:global(.fund-table-head),
+	:global(.fund-row) {
+		display: grid;
+		grid-template-columns: minmax(210px, 1.6fr) minmax(130px, 0.85fr) minmax(110px, 0.8fr) minmax(150px, 1fr) minmax(100px, 0.7fr);
+		gap: 0.85em;
+		align-items: center;
+	}
+
+	:global(.fund-table-head) {
+		padding: 0.72em 0.9em;
+		background: #f8fafc;
+		border-bottom: 1px solid #e2e8f0;
+		color: #64748b;
+		font-size: 0.72rem;
+		font-weight: 800;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	:global(.fund-row) {
+		width: 100%;
+		padding: 0.85em 0.9em;
+		border: 0;
+		border-bottom: 1px solid #eef2f7;
+		border-radius: 0;
 		background: #fff;
 		color: #0f172a;
 		cursor: pointer;
 		text-align: left;
 	}
 
-	.fund-row:hover,
-	.fund-row.active {
-		border-color: #38bdf8;
-		box-shadow: 0 8px 20px rgba(14, 165, 233, 0.12);
+	:global(.fund-row:last-child) {
+		border-bottom: 0;
 	}
 
-	.fund-row.error-row {
+	:global(.fund-row:hover),
+	:global(.fund-row.active) {
+		background: #f0f9ff;
+		box-shadow: inset 3px 0 0 #0284c7;
+	}
+
+	:global(.fund-row.error-row) {
 		grid-template-columns: 1fr;
-		border-color: #fecaca;
+		border-bottom-color: #fecaca;
 		background: #fff7f7;
 	}
 
-	.amount-cell {
+	:global(.amount-cell) {
 		display: grid;
 		gap: 0.25em;
 		cursor: text;
 	}
 
-	.amount-cell input {
+	:global(.amount-cell input) {
 		padding: 0.48em 0.55em;
 		font-size: 0.82rem;
 	}
 
-	.fund-main strong,
-	.fund-row b {
+	:global(.fund-main strong),
+	:global(.fund-row b) {
 		display: block;
 		overflow-wrap: anywhere;
 	}
 
-	.empty-state {
+	:global(.fund-main strong) {
+		font-size: 0.92rem;
+		line-height: 1.35;
+	}
+
+	:global(.empty-state) {
 		padding: 1em;
 		border: 1px dashed #cbd5e1;
 		border-radius: 8px;
@@ -919,10 +1043,6 @@ import Header from '../components/Header.astro';
 		.metric-grid {
 			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
-
-		.fund-row {
-			grid-template-columns: 1.3fr 0.8fr 1fr;
-		}
 	}
 
 	@media (max-width: 980px) {
@@ -976,8 +1096,8 @@ import Header from '../components/Header.astro';
 			flex: 1;
 		}
 
-		.fund-row {
-			grid-template-columns: 1fr;
+		.fund-list {
+			overflow-x: auto;
 		}
 
 		#fund-chart {
