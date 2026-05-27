@@ -1,0 +1,987 @@
+---
+import BaseHead from '../components/BaseHead.astro';
+import Footer from '../components/Footer.astro';
+import Header from '../components/Header.astro';
+---
+
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<BaseHead title="基金观察台" description="同时查询多只基金的实时估值、今日持仓估算和趋势分析。" />
+	</head>
+	<body>
+		<Header />
+		<main class="fund-page">
+			<section class="fund-shell">
+				<div class="fund-title">
+					<p>Fund Monitor</p>
+					<h1>基金观察台</h1>
+				</div>
+
+				<form class="fund-form" id="fund-form">
+					<label class="code-field">
+						<span>基金代码</span>
+						<textarea id="fund-codes" name="fund-codes" rows="2" placeholder="例如 000001, 110022, 161725">000001, 110022</textarea>
+					</label>
+					<label>
+						<span>默认持仓金额</span>
+						<input id="holding-amount" name="holding-amount" type="number" min="0" step="100" value="10000" placeholder="元" />
+					</label>
+					<button type="submit">查询</button>
+				</form>
+
+				<p class="status" id="status">可一次输入多只 6 位基金代码，使用逗号、空格或换行分隔。默认持仓金额会应用到新加载的基金，之后可在列表中逐只调整。</p>
+			</section>
+
+			<section class="metric-grid" aria-live="polite">
+				<div class="metric-card">
+					<span>已加载基金</span>
+					<strong id="fund-count">--</strong>
+					<small id="selected-code">--</small>
+				</div>
+				<div class="metric-card today-card">
+					<span>今日持仓估算</span>
+					<strong id="today-holding-estimate">--</strong>
+					<small id="today-holding-cost">--</small>
+				</div>
+				<div class="metric-card">
+					<span>持仓本金</span>
+					<strong id="portfolio-cost">--</strong>
+					<small id="portfolio-source">--</small>
+				</div>
+			</section>
+
+			<section class="watch-panel">
+				<div class="panel-head">
+					<div>
+						<p>Watchlist</p>
+						<h2>多基金列表</h2>
+					</div>
+				</div>
+				<div class="fund-list" id="fund-list">
+					<div class="empty-state">查询后会在这里显示每只基金的估值、持仓金额、今日估算和买入观察。</div>
+				</div>
+			</section>
+
+			<section class="chart-panel">
+				<div class="panel-head">
+					<div>
+						<p>Trend</p>
+						<h2 id="chart-title">历史走势</h2>
+					</div>
+					<div class="range-tabs" role="group" aria-label="走势范围">
+						<button type="button" class="active" data-range="30">1月</button>
+						<button type="button" data-range="90">3月</button>
+						<button type="button" data-range="365">1年</button>
+						<button type="button" data-range="all">全部</button>
+					</div>
+				</div>
+				<canvas id="fund-chart" width="960" height="420" aria-label="基金净值走势图"></canvas>
+			</section>
+
+			<section class="analysis-grid">
+				<div class="analysis-panel">
+					<div class="panel-head">
+						<div>
+							<p>Today</p>
+							<h2>选中基金今日估算</h2>
+						</div>
+					</div>
+					<dl class="calc-list">
+						<div>
+							<dt>基金名称</dt>
+							<dd id="detail-name">--</dd>
+						</div>
+						<div>
+							<dt>最新估值 / 净值</dt>
+							<dd id="detail-nav">--</dd>
+						</div>
+						<div>
+							<dt>持仓金额</dt>
+							<dd id="detail-amount">--</dd>
+						</div>
+						<div>
+							<dt>今日涨跌</dt>
+							<dd id="detail-today-rate">--</dd>
+						</div>
+						<div>
+							<dt>今日估算</dt>
+							<dd id="detail-today-profit">--</dd>
+						</div>
+					</dl>
+					<p class="hint">今日估算按持仓金额乘以实时估值涨跌率计算，仅用于盘中快速观察。</p>
+				</div>
+
+				<div class="analysis-panel">
+					<div class="panel-head">
+						<div>
+							<p>Signal</p>
+							<h2>买入观察</h2>
+						</div>
+					</div>
+					<div class="signal" id="signal-level">等待数据</div>
+					<ul class="signal-list" id="signal-list">
+						<li>点击基金卡片后，会结合近 20 日趋势、近 60 日回撤、波动率和今日估值给出观察提示。</li>
+					</ul>
+					<p class="hint">这不是投资建议。基金有风险，买入前请结合自己的风险承受能力和持有周期。</p>
+				</div>
+			</section>
+		</main>
+		<Footer />
+
+		<script>
+			const form = document.querySelector('#fund-form');
+			const codesInput = document.querySelector('#fund-codes');
+			const amountInput = document.querySelector('#holding-amount');
+			const statusEl = document.querySelector('#status');
+			const canvas = document.querySelector('#fund-chart');
+			const ctx = canvas.getContext('2d');
+			const rangeButtons = [...document.querySelectorAll('[data-range]')];
+			let state = { funds: [], selectedCode: '', range: '30' };
+
+			const els = {
+				count: document.querySelector('#fund-count'),
+				selectedCode: document.querySelector('#selected-code'),
+				todayHoldingEstimate: document.querySelector('#today-holding-estimate'),
+				todayHoldingCost: document.querySelector('#today-holding-cost'),
+				portfolioCost: document.querySelector('#portfolio-cost'),
+				portfolioSource: document.querySelector('#portfolio-source'),
+				fundList: document.querySelector('#fund-list'),
+				chartTitle: document.querySelector('#chart-title'),
+				detailName: document.querySelector('#detail-name'),
+				detailNav: document.querySelector('#detail-nav'),
+				detailAmount: document.querySelector('#detail-amount'),
+				detailTodayRate: document.querySelector('#detail-today-rate'),
+				detailTodayProfit: document.querySelector('#detail-today-profit'),
+				signal: document.querySelector('#signal-level'),
+				signalList: document.querySelector('#signal-list'),
+			};
+
+			const currency = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' });
+			const number = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 4 });
+			const percent = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 });
+
+			function setStatus(message, type = '') {
+				statusEl.textContent = message;
+				statusEl.dataset.type = type;
+			}
+
+			function formatDate(timestamp) {
+				return new Date(timestamp).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+			}
+
+			function parseCodes(value) {
+				return [...new Set(value.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean))];
+			}
+
+			function loadScript(src) {
+				return new Promise((resolve, reject) => {
+					const script = document.createElement('script');
+					script.src = src;
+					script.async = true;
+					script.onload = () => {
+						script.remove();
+						resolve();
+					};
+					script.onerror = () => {
+						script.remove();
+						reject(new Error('数据源暂时不可用'));
+					};
+					document.head.appendChild(script);
+				});
+			}
+
+			async function fetchFundDetail(code) {
+				const keys = ['fS_name', 'fS_code', 'Data_netWorthTrend', 'Data_ACWorthTrend', 'syl_1n', 'syl_6y', 'syl_3y'];
+				keys.forEach((key) => {
+					try {
+						delete window[key];
+					} catch {
+						window[key] = undefined;
+					}
+				});
+				await loadScript(`https://fund.eastmoney.com/pingzhongdata/${code}.js?v=${Date.now()}`);
+				if (!window.Data_netWorthTrend?.length) throw new Error('没有找到历史净值');
+				return {
+					name: window.fS_name || '未知基金',
+					code: window.fS_code || code,
+					netWorthTrend: window.Data_netWorthTrend.map((item) => ({
+						date: formatDate(item.x),
+						time: item.x,
+						nav: Number(item.y),
+						returnRate: Number(item.equityReturn || 0),
+					})).filter((item) => Number.isFinite(item.nav)),
+				};
+			}
+
+			async function fetchEstimate(code) {
+				return new Promise((resolve) => {
+					const previousCallback = window.jsonpgz;
+					const timer = window.setTimeout(() => {
+						window.jsonpgz = previousCallback;
+						resolve(null);
+					}, 6000);
+					window.jsonpgz = (data) => {
+						window.clearTimeout(timer);
+						window.jsonpgz = previousCallback;
+						resolve(data);
+					};
+					loadScript(`https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`).catch(() => {
+						window.clearTimeout(timer);
+						window.jsonpgz = previousCallback;
+						resolve(null);
+					});
+				});
+			}
+
+			async function loadFund(code, amount) {
+				try {
+					const detail = await fetchFundDetail(code);
+					const estimate = await fetchEstimate(code);
+					return { code, amount, detail, estimate, error: '' };
+				} catch (error) {
+					return { code, amount, detail: null, estimate: null, error: error.message || '查询失败' };
+				}
+			}
+
+			function getDefaultAmount() {
+				return Math.max(0, Number(amountInput.value || 0));
+			}
+
+			function getFundAmount(fund) {
+				return Math.max(0, Number(fund.amount ?? getDefaultAmount()));
+			}
+
+			function getSelectedFund() {
+				return state.funds.find((fund) => fund.code === state.selectedCode && fund.detail) || state.funds.find((fund) => fund.detail);
+			}
+
+			function latestNav(fund) {
+				const last = fund.detail.netWorthTrend.at(-1);
+				const estimateNav = Number(fund.estimate?.gsz);
+				return Number.isFinite(estimateNav) && estimateNav > 0 ? estimateNav : last.nav;
+			}
+
+			function dailyRate(fund) {
+				const last = fund.detail.netWorthTrend.at(-1);
+				return Number(fund.estimate?.gszzl ?? last.returnRate);
+			}
+
+			function positionFor(fund) {
+				const amount = getFundAmount(fund);
+				const nav = latestNav(fund);
+				const todayRate = dailyRate(fund);
+				const todayProfit = amount * (todayRate / 100);
+				return { amount, nav, todayRate, todayProfit };
+			}
+
+			function calculateMaxDrawdown(items) {
+				let peak = items[0]?.nav || 0;
+				let drawdown = 0;
+				items.forEach((item) => {
+					peak = Math.max(peak, item.nav);
+					drawdown = Math.min(drawdown, (item.nav - peak) / peak);
+				});
+				return drawdown * 100;
+			}
+
+			function analyzeFund(fund) {
+				const trend = fund.detail.netWorthTrend;
+				const last20 = trend.slice(-20);
+				const last60 = trend.slice(-60);
+				const last = trend.at(-1);
+				const ma20 = last20.reduce((sum, item) => sum + item.nav, 0) / last20.length;
+				const return20 = ((last.nav - last20[0].nav) / last20[0].nav) * 100;
+				const drawdown60 = calculateMaxDrawdown(last60);
+				const volatility = Math.sqrt(last60.reduce((sum, item) => sum + Math.pow(item.returnRate, 2), 0) / last60.length);
+				const today = dailyRate(fund);
+				let score = 0;
+				const messages = [];
+
+				if (last.nav >= ma20) {
+					score += 1;
+					messages.push('净值在 20 日均线之上，短线趋势偏强。');
+				} else {
+					messages.push('净值低于 20 日均线，短线仍偏谨慎。');
+				}
+				if (return20 > 3) {
+					score -= 1;
+					messages.push(`近 20 个交易日上涨 ${percent.format(return20)}%，追高风险上升。`);
+				} else if (return20 < -3) {
+					score += 1;
+					messages.push(`近 20 个交易日回落 ${percent.format(Math.abs(return20))}%，可关注分批机会。`);
+				} else {
+					messages.push('近 20 个交易日波动不极端，适合继续观察确认。');
+				}
+				if (drawdown60 < -8) {
+					score -= 1;
+					messages.push(`近 60 日最大回撤约 ${percent.format(drawdown60)}%，风险承受力要放在前面。`);
+				} else {
+					score += 1;
+					messages.push(`近 60 日回撤约 ${percent.format(drawdown60)}%，回撤压力相对可控。`);
+				}
+				if (volatility > 1.8) {
+					score -= 1;
+					messages.push('日波动率偏高，单笔买入容易受短期价格影响。');
+				}
+				if (today > 1.5) {
+					score -= 1;
+					messages.push('今日估值涨幅较大，更适合等待回落或分批。');
+				} else if (today < -1.5) {
+					score += 1;
+					messages.push('今日估值明显回调，若长期看好可考虑小额分批。');
+				}
+
+				if (score >= 2) return { label: '偏可关注', tone: 'up', messages };
+				if (score <= -2) return { label: '偏谨慎', tone: 'down', messages };
+				return { label: '中性观察', tone: 'neutral', messages };
+			}
+
+			function renderPortfolio() {
+				const validFunds = state.funds.filter((fund) => fund.detail);
+				const positions = validFunds.map(positionFor);
+				const cost = positions.reduce((sum, item) => sum + item.amount, 0);
+				const todayProfit = positions.reduce((sum, item) => sum + item.todayProfit, 0);
+				const todayRate = cost ? (todayProfit / cost) * 100 : 0;
+				const estimates = validFunds.filter((fund) => fund.estimate).length;
+
+				els.count.textContent = `${validFunds.length} 只`;
+				els.selectedCode.textContent = getSelectedFund()?.detail?.name || '--';
+				els.todayHoldingEstimate.textContent = `${todayRate >= 0 ? '+' : ''}${percent.format(todayRate)}% / ${currency.format(todayProfit)}`;
+				els.todayHoldingEstimate.dataset.tone = todayProfit >= 0 ? 'up' : 'down';
+				els.todayHoldingCost.textContent = `投入本金约 ${currency.format(cost)}`;
+				els.portfolioCost.textContent = currency.format(cost);
+				els.portfolioSource.textContent = estimates ? `${estimates} 只含实时估值` : '使用最近披露净值';
+			}
+
+			function renderFundCards() {
+				if (!state.funds.length) {
+					els.fundList.innerHTML = '<div class="empty-state">查询后会在这里显示每只基金的估值、持仓金额、今日估算和买入观察。</div>';
+					return;
+				}
+
+				els.fundList.innerHTML = state.funds.map((fund) => {
+					if (fund.error || !fund.detail) {
+						return `
+							<div class="fund-row error-row" data-code="${fund.code}">
+								<span class="fund-main"><strong>${fund.code}</strong><small>${fund.error || '查询失败'}</small></span>
+							</div>
+						`;
+					}
+					const pos = positionFor(fund);
+					const signal = analyzeFund(fund);
+					const active = fund.code === state.selectedCode ? ' active' : '';
+					return `
+						<div class="fund-row${active}" data-code="${fund.code}">
+							<span class="fund-main">
+								<strong>${fund.detail.name}</strong>
+								<small>${fund.code} · ${fund.estimate?.gztime || fund.detail.netWorthTrend.at(-1).date}</small>
+							</span>
+							<label class="amount-cell">
+								<small>持仓金额</small>
+								<input class="fund-amount" data-code="${fund.code}" type="number" min="0" step="100" value="${pos.amount}" />
+							</label>
+							<span>
+								<small>估值 / 净值</small>
+								<b>${number.format(pos.nav)}</b>
+							</span>
+							<span>
+								<small>今日估算</small>
+								<b data-tone="${pos.todayProfit >= 0 ? 'up' : 'down'}">${pos.todayRate >= 0 ? '+' : ''}${percent.format(pos.todayRate)}% / ${currency.format(pos.todayProfit)}</b>
+							</span>
+							<span>
+								<small>观察</small>
+								<b data-tone="${signal.tone}">${signal.label}</b>
+							</span>
+						</div>
+					`;
+				}).join('');
+
+				els.fundList.querySelectorAll('.fund-row').forEach((row) => {
+					row.addEventListener('click', (event) => {
+						if (event.target.closest('input')) return;
+						const fund = state.funds.find((item) => item.code === row.dataset.code);
+						if (!fund?.detail) return;
+						state.selectedCode = fund.code;
+						renderAll();
+					});
+				});
+
+				els.fundList.querySelectorAll('.fund-amount').forEach((input) => {
+					input.addEventListener('input', () => {
+						const fund = state.funds.find((item) => item.code === input.dataset.code);
+						if (!fund) return;
+						fund.amount = Math.max(0, Number(input.value || 0));
+						renderPortfolio();
+						renderSelectedDetails();
+					});
+					input.addEventListener('change', renderAll);
+				});
+			}
+
+			function getVisibleTrend() {
+				const fund = getSelectedFund();
+				const trend = fund?.detail?.netWorthTrend || [];
+				if (state.range === 'all') return trend;
+				return trend.slice(-Number(state.range));
+			}
+
+			function drawChart() {
+				const trend = getVisibleTrend();
+				const fund = getSelectedFund();
+				const dpr = window.devicePixelRatio || 1;
+				const rect = canvas.getBoundingClientRect();
+				canvas.width = Math.max(320, rect.width * dpr);
+				canvas.height = Math.max(220, rect.height * dpr);
+				ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+				ctx.clearRect(0, 0, rect.width, rect.height);
+
+				const width = rect.width;
+				const height = rect.height;
+				const padding = { top: 24, right: 24, bottom: 34, left: 52 };
+				ctx.fillStyle = '#ffffff';
+				ctx.fillRect(0, 0, width, height);
+				els.chartTitle.textContent = fund?.detail ? `${fund.detail.name} 历史走势` : '历史走势';
+
+				if (trend.length < 2) {
+					ctx.fillStyle = '#64748b';
+					ctx.font = '16px sans-serif';
+					ctx.fillText('暂无走势数据', 24, 48);
+					return;
+				}
+
+				const values = trend.map((item) => item.nav);
+				const min = Math.min(...values);
+				const max = Math.max(...values);
+				const span = max - min || 1;
+				const plotW = width - padding.left - padding.right;
+				const plotH = height - padding.top - padding.bottom;
+				const x = (index) => padding.left + (index / (trend.length - 1)) * plotW;
+				const y = (value) => padding.top + (1 - (value - min) / span) * plotH;
+
+				ctx.strokeStyle = '#e2e8f0';
+				ctx.lineWidth = 1;
+				ctx.fillStyle = '#64748b';
+				ctx.font = '12px sans-serif';
+				for (let i = 0; i <= 4; i += 1) {
+					const gridY = padding.top + (plotH / 4) * i;
+					const label = max - (span / 4) * i;
+					ctx.beginPath();
+					ctx.moveTo(padding.left, gridY);
+					ctx.lineTo(width - padding.right, gridY);
+					ctx.stroke();
+					ctx.fillText(label.toFixed(4), 8, gridY + 4);
+				}
+
+				const gradient = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
+				gradient.addColorStop(0, 'rgba(14, 165, 233, 0.26)');
+				gradient.addColorStop(1, 'rgba(14, 165, 233, 0)');
+				ctx.beginPath();
+				trend.forEach((item, index) => {
+					if (index === 0) ctx.moveTo(x(index), y(item.nav));
+					else ctx.lineTo(x(index), y(item.nav));
+				});
+				ctx.lineTo(width - padding.right, height - padding.bottom);
+				ctx.lineTo(padding.left, height - padding.bottom);
+				ctx.closePath();
+				ctx.fillStyle = gradient;
+				ctx.fill();
+
+				ctx.beginPath();
+				trend.forEach((item, index) => {
+					if (index === 0) ctx.moveTo(x(index), y(item.nav));
+					else ctx.lineTo(x(index), y(item.nav));
+				});
+				ctx.strokeStyle = '#0284c7';
+				ctx.lineWidth = 2.5;
+				ctx.stroke();
+
+				ctx.fillStyle = '#334155';
+				ctx.fillText(trend[0].date.slice(5), padding.left, height - 10);
+				ctx.textAlign = 'right';
+				ctx.fillText(trend.at(-1).date.slice(5), width - padding.right, height - 10);
+				ctx.textAlign = 'left';
+			}
+
+			function renderSelectedDetails() {
+				const fund = getSelectedFund();
+				if (!fund?.detail) {
+					els.detailName.textContent = '--';
+					els.detailNav.textContent = '--';
+					els.detailAmount.textContent = '--';
+					els.detailTodayRate.textContent = '--';
+					els.detailTodayProfit.textContent = '--';
+					els.signal.textContent = '等待数据';
+					els.signal.dataset.tone = 'neutral';
+					els.signalList.innerHTML = '<li>点击基金卡片后，会结合近 20 日趋势、近 60 日回撤、波动率和今日估值给出观察提示。</li>';
+					return;
+				}
+
+				const pos = positionFor(fund);
+				const signal = analyzeFund(fund);
+				const latestDate = fund.estimate?.gztime ? `估值 ${fund.estimate.gztime}` : `净值 ${fund.detail.netWorthTrend.at(-1).date}`;
+
+				els.detailName.textContent = fund.detail.name;
+				els.detailNav.textContent = `${number.format(pos.nav)}（${latestDate}）`;
+				els.detailAmount.textContent = currency.format(pos.amount);
+				els.detailTodayRate.textContent = `${pos.todayRate >= 0 ? '+' : ''}${percent.format(pos.todayRate)}%`;
+				els.detailTodayRate.dataset.tone = pos.todayRate >= 0 ? 'up' : 'down';
+				els.detailTodayProfit.textContent = currency.format(pos.todayProfit);
+				els.detailTodayProfit.dataset.tone = pos.todayProfit >= 0 ? 'up' : 'down';
+				els.signal.textContent = signal.label;
+				els.signal.dataset.tone = signal.tone;
+				els.signalList.innerHTML = signal.messages.map((message) => `<li>${message}</li>`).join('');
+			}
+
+			function renderAll() {
+				renderPortfolio();
+				renderFundCards();
+				renderSelectedDetails();
+				drawChart();
+			}
+
+			async function queryFunds() {
+				const codes = parseCodes(codesInput.value);
+				if (!codes.length || codes.some((code) => !/^\d{6}$/.test(code))) {
+					setStatus('请输入 6 位基金代码；多只基金可用逗号、空格或换行分隔。', 'error');
+					return;
+				}
+				if (codes.length > 8) {
+					setStatus('一次最多查询 8 只基金，避免数据源请求过多。', 'error');
+					return;
+				}
+
+				const previousAmounts = new Map(state.funds.map((fund) => [fund.code, getFundAmount(fund)]));
+				const defaultAmount = getDefaultAmount();
+				setStatus(`正在获取 ${codes.length} 只基金数据...`);
+				state.funds = [];
+				state.selectedCode = '';
+				renderAll();
+
+				for (const [index, code] of codes.entries()) {
+					setStatus(`正在获取 ${code}（${index + 1}/${codes.length}）...`);
+					const fund = await loadFund(code, previousAmounts.get(code) ?? defaultAmount);
+					state.funds.push(fund);
+					if (!state.selectedCode && fund.detail) state.selectedCode = fund.code;
+					renderAll();
+				}
+
+				const successCount = state.funds.filter((fund) => fund.detail).length;
+				const failedCount = state.funds.length - successCount;
+				if (!successCount) {
+					setStatus('没有成功加载的基金，请检查代码后再试。', 'error');
+					return;
+				}
+				setStatus(failedCount ? `已加载 ${successCount} 只基金，${failedCount} 只失败。` : `已加载 ${successCount} 只基金。`, failedCount ? 'warn' : 'ok');
+			}
+
+			form.addEventListener('submit', (event) => {
+				event.preventDefault();
+				queryFunds();
+			});
+			amountInput.addEventListener('change', () => {
+				const defaultAmount = getDefaultAmount();
+				state.funds.forEach((fund) => {
+					fund.amount = defaultAmount;
+				});
+				if (state.funds.length) renderAll();
+			});
+			rangeButtons.forEach((button) => {
+				button.addEventListener('click', () => {
+					rangeButtons.forEach((item) => item.classList.remove('active'));
+					button.classList.add('active');
+					state.range = button.dataset.range;
+					drawChart();
+				});
+			});
+			window.addEventListener('resize', drawChart);
+
+			queryFunds();
+		</script>
+	</body>
+</html>
+
+<style>
+	.fund-page {
+		width: 1180px;
+		max-width: calc(100% - 2em);
+		padding: 2em 1em 3em;
+	}
+
+	.fund-shell,
+	.watch-panel,
+	.chart-panel,
+	.analysis-panel,
+	.metric-card {
+		background: rgba(255, 255, 255, 0.94);
+		border: 1px solid rgba(148, 163, 184, 0.25);
+		border-radius: 8px;
+		box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+	}
+
+	.fund-shell,
+	.watch-panel,
+	.chart-panel,
+	.analysis-panel {
+		padding: 1.1em;
+	}
+
+	.fund-title {
+		margin-bottom: 1.2em;
+	}
+
+	.fund-title p,
+	.panel-head p {
+		margin: 0 0 0.3rem;
+		color: #0f766e;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.fund-title h1,
+	.panel-head h2 {
+		margin: 0;
+	}
+
+	.fund-form {
+		display: grid;
+		grid-template-columns: minmax(260px, 1.8fr) minmax(160px, 0.8fr) auto;
+		gap: 0.75em;
+		align-items: end;
+	}
+
+	.fund-form label {
+		display: grid;
+		gap: 0.35em;
+		color: #475569;
+		font-size: 0.78rem;
+		font-weight: 700;
+	}
+
+	.fund-form input,
+	.fund-form textarea,
+	.amount-cell input {
+		width: 100%;
+		box-sizing: border-box;
+		border: 1px solid #cbd5e1;
+		border-radius: 6px;
+		padding: 0.72em 0.8em;
+		color: #0f172a;
+		background: #fff;
+		font: inherit;
+		line-height: 1.4;
+	}
+
+	.fund-form textarea {
+		resize: vertical;
+	}
+
+	.fund-form button,
+	.range-tabs button {
+		border: 0;
+		border-radius: 6px;
+		cursor: pointer;
+		font-weight: 700;
+	}
+
+	.fund-form button {
+		min-height: 48px;
+		padding: 0 1.2em;
+		color: #fff;
+		background: #0369a1;
+	}
+
+	.status {
+		margin: 1em 0 0;
+		color: #64748b;
+		font-size: 0.82rem;
+	}
+
+	.status[data-type='ok'] {
+		color: #047857;
+	}
+
+	.status[data-type='warn'] {
+		color: #b45309;
+	}
+
+	.status[data-type='error'] {
+		color: #b91c1c;
+	}
+
+	.metric-grid {
+		display: grid;
+		grid-template-columns: 1fr 1.35fr 1fr;
+		gap: 0.85em;
+		margin: 0.85em 0;
+	}
+
+	.metric-card {
+		padding: 1em;
+	}
+
+	.today-card {
+		border-color: rgba(20, 184, 166, 0.35);
+	}
+
+	.metric-card span,
+	.calc-list dt,
+	.fund-row small,
+	.amount-cell small {
+		display: block;
+		color: #64748b;
+		font-size: 0.75rem;
+		font-weight: 700;
+	}
+
+	.metric-card strong {
+		display: block;
+		min-height: 1.4em;
+		margin: 0.15em 0;
+		color: #0f172a;
+		font-size: 1.35rem;
+		line-height: 1.25;
+		overflow-wrap: anywhere;
+	}
+
+	.today-card strong {
+		font-size: 1.55rem;
+	}
+
+	.metric-card small,
+	.hint {
+		color: #64748b;
+		font-size: 0.72rem;
+	}
+
+	[data-tone='up'] {
+		color: #dc2626 !important;
+	}
+
+	[data-tone='down'] {
+		color: #16a34a !important;
+	}
+
+	[data-tone='neutral'] {
+		color: #475569 !important;
+	}
+
+	.watch-panel {
+		margin-bottom: 0.85em;
+	}
+
+	.panel-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1em;
+		margin-bottom: 0.8em;
+	}
+
+	.fund-list {
+		display: grid;
+		gap: 0.55em;
+	}
+
+	.fund-row {
+		display: grid;
+		grid-template-columns: minmax(180px, 1.45fr) minmax(120px, 0.9fr) repeat(3, minmax(90px, 1fr));
+		gap: 0.75em;
+		align-items: center;
+		width: 100%;
+		padding: 0.8em;
+		border: 1px solid #e2e8f0;
+		border-radius: 8px;
+		background: #fff;
+		color: #0f172a;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.fund-row:hover,
+	.fund-row.active {
+		border-color: #38bdf8;
+		box-shadow: 0 8px 20px rgba(14, 165, 233, 0.12);
+	}
+
+	.fund-row.error-row {
+		grid-template-columns: 1fr;
+		border-color: #fecaca;
+		background: #fff7f7;
+	}
+
+	.amount-cell {
+		display: grid;
+		gap: 0.25em;
+		cursor: text;
+	}
+
+	.amount-cell input {
+		padding: 0.48em 0.55em;
+		font-size: 0.82rem;
+	}
+
+	.fund-main strong,
+	.fund-row b {
+		display: block;
+		overflow-wrap: anywhere;
+	}
+
+	.empty-state {
+		padding: 1em;
+		border: 1px dashed #cbd5e1;
+		border-radius: 8px;
+		color: #64748b;
+		font-size: 0.86rem;
+	}
+
+	.range-tabs {
+		display: flex;
+		gap: 0.35em;
+		padding: 0.25em;
+		background: #f1f5f9;
+		border-radius: 8px;
+	}
+
+	.range-tabs button {
+		padding: 0.45em 0.7em;
+		color: #475569;
+		background: transparent;
+	}
+
+	.range-tabs button.active {
+		color: #075985;
+		background: #fff;
+		box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+	}
+
+	#fund-chart {
+		display: block;
+		width: 100%;
+		height: 360px;
+		border: 1px solid #e2e8f0;
+		border-radius: 8px;
+	}
+
+	.analysis-grid {
+		display: grid;
+		grid-template-columns: 0.95fr 1.05fr;
+		gap: 0.85em;
+		margin-top: 0.85em;
+	}
+
+	.calc-list {
+		margin: 0;
+	}
+
+	.calc-list div {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1em;
+		padding: 0.72em 0;
+		border-bottom: 1px solid #e2e8f0;
+	}
+
+	.calc-list dd {
+		margin: 0;
+		color: #0f172a;
+		font-weight: 700;
+		text-align: right;
+		overflow-wrap: anywhere;
+	}
+
+	.signal {
+		display: inline-flex;
+		align-items: center;
+		min-height: 2.2em;
+		padding: 0 0.75em;
+		border-radius: 6px;
+		background: #f1f5f9;
+		color: #334155;
+		font-weight: 800;
+	}
+
+	.signal-list {
+		margin: 0.85em 0;
+		padding-left: 1.1em;
+		color: #334155;
+		font-size: 0.86rem;
+	}
+
+	.signal-list li {
+		margin: 0.3em 0;
+	}
+
+	@media (max-width: 1100px) {
+		.metric-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
+
+		.fund-row {
+			grid-template-columns: 1.3fr 0.8fr 1fr;
+		}
+	}
+
+	@media (max-width: 980px) {
+		.fund-form,
+		.analysis-grid {
+			grid-template-columns: 1fr 1fr;
+		}
+
+		.code-field,
+		.fund-form button,
+		.watch-panel,
+		.chart-panel {
+			grid-column: span 2;
+		}
+	}
+
+	@media (max-width: 700px) {
+		.metric-grid {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.fund-page {
+			max-width: calc(100% - 1em);
+			padding: 1em 0.5em 2em;
+		}
+
+		.fund-form,
+		.analysis-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.code-field,
+		.fund-form button,
+		.watch-panel,
+		.chart-panel {
+			grid-column: auto;
+		}
+
+		.panel-head {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+
+		.range-tabs {
+			width: 100%;
+		}
+
+		.range-tabs button {
+			flex: 1;
+		}
+
+		.fund-row {
+			grid-template-columns: 1fr;
+		}
+
+		#fund-chart {
+			height: 280px;
+		}
+	}
+</style>
